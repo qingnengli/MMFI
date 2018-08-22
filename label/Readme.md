@@ -1,6 +1,6 @@
-./label
-  ./mnist
-    ./0
-    ./1
-    ...
+./label   
+  ./mnist  
+    ./0   
+    ./1  
+    ...   
   ./PASCALVOC
