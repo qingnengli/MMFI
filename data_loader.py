@@ -43,16 +43,19 @@ def _read_label_file(file, delimiter):
   return imagepaths, labelpaths,condpaths,shape
 
 def read_inputs(is_training):
-  data_file = os.path.join(FLAGS.path_prefix,FLAGS.data_file)
+  if is_training:
+    shuffle = True
+    file = 'train.txt'
+  else:
+    shuffle = False
+    file = 'eval.txt'
+
+  data_file = os.path.join(FLAGS.path_prefix, file)
   imagepaths, labelpaths,condpaths,shape  = _read_label_file(data_file, FLAGS.delimiter)
 
   # Create a queue that produces the filenames to read.
-  if is_training:
-    filename_queue = tf.train.slice_input_producer([imagepaths, labelpaths,condpaths,shape], shuffle= FLAGS.shuffle,
+  filename_queue = tf.train.slice_input_producer([imagepaths, labelpaths,condpaths,shape], shuffle= shuffle,
                                                    capacity= 1024)
-  else:
-    filename_queue = tf.train.slice_input_producer([imagepaths, labelpaths,condpaths,shape], shuffle= False,
-                                                   capacity= 1024, num_epochs =1)
   # Data information
   imagename = filename_queue[0]
   labelname = filename_queue[1]
@@ -72,7 +75,7 @@ def read_inputs(is_training):
   # Pre-Process Image and Label data
   reshaped_image = _image_preprocess(image)
   reshaped_label = _label_preprocess(label)
-  reshaped_cond = _image_preprocess(cond)
+  reshaped_cond = _cond_preprocess(cond)
 
   # Ensure that the random shuffling has good mixing properties.
   min_fraction_of_examples_in_queue = 0.4
@@ -89,6 +92,12 @@ def read_inputs(is_training):
       num_threads=FLAGS.num_threads,
       capacity= min_queue_examples + 3 * FLAGS.batch_size,
       allow_smaller_final_batch=True)
+  images_batch = tf.reshape(images_batch, shape=[FLAGS.batch_size, FLAGS.input_size,
+                                                 FLAGS.input_size, FLAGS.image_num_channels])
+  label_batch = tf.reshape(label_batch, shape=[FLAGS.batch_size, FLAGS.input_size,
+                                               FLAGS.input_size, FLAGS.label_num_channels])
+  cond_batch = tf.reshape(cond_batch, shape=[FLAGS.batch_size, FLAGS.input_size,
+                                                 FLAGS.input_size, FLAGS.cond_num_channels])
   return images_batch, label_batch, cond_batch
 
 
@@ -100,17 +109,29 @@ def _image_preprocess(image):
   processed_image = tf.image.per_image_standardization(processed_image)
   return processed_image
 
+def _cond_preprocess(cond):
+  # Extract the effective regions
+  processed_image = tf.image.resize_image_with_crop_or_pad(cond,FLAGS.crop_size,FLAGS.crop_size)
+  processed_image = tf.image.resize_images(processed_image, [FLAGS.input_size,FLAGS.input_size])
+  # Subtract off the mean and divide by the variance of the pixels.
+  min = tf.reduce_min(cond)
+  max = tf.reduce_max(cond)
+  processed_image = (processed_image - min)/(max-min)
+  return processed_image
+
 import cv2
 import numpy as np
 def _label_preprocess(label):
   processed_label = tf.image.resize_image_with_crop_or_pad(label, FLAGS.crop_size, FLAGS.crop_size)
   processed_label = tf.image.resize_images(processed_label, [FLAGS.input_size, FLAGS.input_size])
   # Make mask to extract approriate regions
+
   mask = np.zeros([FLAGS.input_size,FLAGS.input_size,FLAGS.label_num_channels])
   radius = int(FLAGS.input_size/2)
   cv2.circle(mask,(radius,radius),radius,1,-1)
   mask = tf.convert_to_tensor(mask,dtype=tf.float32)
   processed_label = processed_label * mask
+
   # Ensure the label with 0&1 value
   processed_label = tf.cast(tf.greater(processed_label,0),dtype=tf.float32)
   return processed_label
