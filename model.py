@@ -14,69 +14,66 @@ layers = tf.contrib.layers
 
 from network import unconditional_generator
 from network import unconditional_discriminator
-from network import Vanillia
-from network import Onlydecoder
 from network import SRMatrix
 
 from utils import get_optimizer
 from utils import get_learning_rate
 from utils import get_init_fn
 
-from loss import tf_ms_ssim
 from loss import cross_entropy_loss
+from loss import combine_loss
 from loss import dice_loss
 from loss import mae_loss
-from loss import ssim_loss
 from loss import l1_loss
 
 import config
 FLAGS = tf.app.flags.FLAGS
 
 logdir = os.path.join(FLAGS.path_prefix, FLAGS.logdir)
-logdir = os.path.join(logdir, "{:%m%d-%H%M}".format(datetime.datetime.now()))
+# logdir = os.path.join(logdir, "{:%m%d-%H%M}".format(datetime.datetime.now()))
 traindir = os.path.join(logdir,'train')
 
 def slim_model(inputs,targets):
-  generated_data, Aux_data = SRMatrix(inputs,keep_prob = FLAGS.keep_prob)
-
+  generated_data,Aux_data = SRMatrix(inputs, FLAGS.weight_decay, FLAGS.keep_prob, use_aux=FLAGS.useaux)
   with tf.name_scope('Train_summary'):
     summeried_num = FLAGS.grid_size * FLAGS.grid_size
     reshaped_images = tfgan.eval.image_reshaper(inputs[:summeried_num, ...], num_cols=FLAGS.grid_size)
     reshaped_generated_data = tfgan.eval.image_reshaper(generated_data[:summeried_num, ...], num_cols=FLAGS.grid_size)
     reshaped_targets = tfgan.eval.image_reshaper(targets[:summeried_num, ...], num_cols=FLAGS.grid_size)
-    reshaped_auxdata = tfgan.eval.image_reshaper(Aux_data[:summeried_num, ...], num_cols=FLAGS.grid_size)
     tf.summary.image('Inputs', reshaped_images, FLAGS.max_summary_images)
     tf.summary.image('Generated_data', reshaped_generated_data, FLAGS.max_summary_images)
     tf.summary.image('Real_data', reshaped_targets, FLAGS.max_summary_images)
-    tf.summary.image('Aux_Generated_data', reshaped_auxdata, FLAGS.max_summary_images)
 
-  with tf.name_scope('Aux_loss'):
-    resized_targets = tf.image.resize_images(targets,[32,32])
-    aux_mae = mae_loss(Aux_data, resized_targets)
-    aux_dice = dice_loss(Aux_data, resized_targets)
-    aux_entropy_loss = cross_entropy_loss(Aux_data, resized_targets)
-    aux_loss = aux_mae * FLAGS.aux_mae_loss_weight\
-               + aux_dice * FLAGS.aux_dice_loss_weight\
-               + aux_entropy_loss* FLAGS.aux_entropy_loss_weight
+
+  with tf.name_scope('Aux_summary'):
+    b, h, w, c = targets.get_shape().as_list()
+    Aux_data_1 = Aux_data[0]
+    Aux_data_2 = Aux_data[1]
+    Aux_data_3 = Aux_data[2]
+    reshaped_auxdata_1 = tfgan.eval.image_reshaper(Aux_data_1[:summeried_num, ...], num_cols=FLAGS.grid_size)
+    reshaped_auxdata_2 = tfgan.eval.image_reshaper(Aux_data_2[:summeried_num, ...], num_cols=FLAGS.grid_size)
+    reshaped_auxdata_3 = tfgan.eval.image_reshaper(Aux_data_3[:summeried_num, ...], num_cols=FLAGS.grid_size)
+    tf.summary.image('Aux_data_1', reshaped_auxdata_1, FLAGS.max_summary_images)
+    tf.summary.image('Aux_data_2', reshaped_auxdata_2, FLAGS.max_summary_images)
+    tf.summary.image('Aux_data_3', reshaped_auxdata_3, FLAGS.max_summary_images)
+    aux_loss_1 = combine_loss(Aux_data_1, tf.image.resize_images(targets, [h // 8, w // 8]), name='Aux_loss_1')
+    aux_loss_2 = combine_loss(Aux_data_2, tf.image.resize_images(targets, [h // 4, w // 4]), name='Aux_loss_2')
+    aux_loss_3 = combine_loss(Aux_data_3, tf.image.resize_images(targets, [h // 2, w // 2]), name='Aux_loss_3')
+    aux_loss = aux_loss_1 + aux_loss_2 + aux_loss_3
 
   with tf.name_scope('Train_Loss'):
-    ssim = ssim_loss(generated_data, targets)
-    mae = mae_loss(generated_data, targets)
-    dice = dice_loss(generated_data, targets)
-    entropy_loss = cross_entropy_loss(generated_data, targets)
-    main_loss = mae * FLAGS.mae_loss_weight\
-               + dice * FLAGS.dice_loss_weight\
-               + entropy_loss* FLAGS.entropy_loss_weight\
-               + ssim *FLAGS.ssim_loss_weight
-    total_loss = main_loss + aux_loss * int(FLAGS.useaux)
+    main_loss = combine_loss(generated_data,targets,add_summary=True,name='Main_loss')
+    reg_loss = tf.losses.get_regularization_loss()
+    total_loss = main_loss + reg_loss + aux_loss * int(FLAGS.useaux)
     total_loss = tf.check_numerics(total_loss, 'Loss is inf or nan.')
+    tf.summary.scalar('Regularization_loss',reg_loss)
     tf.summary.scalar('Total_loss',total_loss)
 
   lr = get_learning_rate(FLAGS.learning_rate)
   optimizer = get_optimizer(lr)
   update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-  with tf.control_dependencies(update_ops):
-   train_op = slim.learning.create_train_op(total_loss, optimizer)
+  # with tf.control_dependencies(update_ops):
+  train_op = slim.learning.create_train_op(total_loss, optimizer, update_ops =update_ops)
   tf.summary.scalar('Learning_rate', lr)
 
   slim.learning.train(train_op, traindir,
@@ -98,7 +95,7 @@ def tfgan_model(inputs,targets):
     """
     # Create a GANModel tuple.
     gan_model = tfgan.gan_model(
-        generator_fn=SRMatrix,
+        generator_fn=unconditional_generator,
         discriminator_fn=unconditional_discriminator,
         real_data=targets,
         generator_inputs=inputs)
@@ -127,14 +124,7 @@ def tfgan_model(inputs,targets):
     # Modify the loss tuple to include the pixel loss. Add summaries as well.
     # return gan_loss._replace(generator_loss=combined_loss).
     with tf.name_scope('G_loss'):
-      ssim = ssim_loss(gan_model.generated_data,gan_model.real_data)
-      mae = mae_loss(gan_model.generated_data,gan_model.real_data)
-      dice = dice_loss(gan_model.generated_data,gan_model.real_data)
-      entropy_loss = cross_entropy_loss(gan_model.generated_data,gan_model.real_data)
-      main_loss =  mae * FLAGS.mae_loss_weight \
-                   + dice * FLAGS.dice_loss_weight\
-                   + entropy_loss* FLAGS.entropy_loss_weight \
-                   + ssim *FLAGS.ssim_loss_weight
+      main_loss = combine_loss(gan_model.generated_data, targets, add_summary=True)
       gan_loss = tfgan.losses.combine_adversarial_loss(
           gan_loss = gan_loss, non_adversarial_loss = main_loss,
           gan_model = gan_model, # Used to access the generator's variables.
@@ -157,9 +147,8 @@ def tfgan_model(inputs,targets):
       tf.summary.scalar('discriminator_lr', dis_lr)
 
     train_steps = tfgan.GANTrainSteps(generator_train_steps=2, discriminator_train_steps=1)
-    status_message = tf.string_join(['Starting train step: ',
-                                     tf.as_string(tf.train.get_or_create_global_step())],
-                                    name='status_message')
+    status_message = tf.string_join(['Train step: ', tf.as_string(tf.train.get_or_create_global_step())],
+                                     name='status_message')
     if FLAGS.max_iter == 0:
       raise ValueError('The number of iteration must be positive integer')
     else:
@@ -168,3 +157,4 @@ def tfgan_model(inputs,targets):
                       hooks=[tf.train.StopAtStepHook(num_steps=FLAGS.max_iter),
                              tf.train.LoggingTensorHook([status_message], every_n_iter=FLAGS.log_n_steps)],
                       save_checkpoint_secs=FLAGS.save_interval_secs, save_summaries_steps = FLAGS.save_summaries_steps)
+
