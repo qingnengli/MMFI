@@ -11,15 +11,11 @@ tf.app.flags.DEFINE_string(
     'path_prefix', 'E:\GitHub\MMFI',
     'the prefix address for images.')
 
-# tf.app.flags.DEFINE_string(
-#     'data_file', 'train.txt',
-#     'Name of the file containing addresses and labels of training images.')
-
 tf.app.flags.DEFINE_string(
     'delimiter', ' ', 'Delimiter of the input files.')
 
 tf.app.flags.DEFINE_integer(
-    'input_size',64,
+    'input_size',256,
     'The size of images and labels for input.')
 
 tf.app.flags.DEFINE_integer(
@@ -49,14 +45,10 @@ tf.app.flags.DEFINE_string(
     'The directory of saved checkpoints and logging events.')
 
 tf.app.flags.DEFINE_integer(
-    'batch_size',64,'The training batch size.')
+    'batch_size',16,'The training batch size.')
 
-tf.app.flags.DEFINE_boolean(
-    'trainable', True,'Whether is train or not.')
-
-tf.app.flags.DEFINE_integer(
-    'output_channel', 1,
-    'The total channels of output from backbone')
+tf.app.flags.DEFINE_float('weight_decay', 1e-3,
+                          'The weight decay of generator.')
 
 tf.app.flags.DEFINE_float('learning_rate', 1e-3,
                           'Initial learning rate.')
@@ -66,37 +58,36 @@ tf.app.flags.DEFINE_float(
     'The keep probability of dropout layer.')
 
 tf.app.flags.DEFINE_integer(
-    'max_iter', 5000,
+    'output_channel', 1,
+    'The total channels of output from backbone')
+
+tf.app.flags.DEFINE_integer(
+    'max_iter', 15000,
     'The max iteration to train, the total train step')
+
+tf.app.flags.DEFINE_float(
+    'learning_rate_decay_factor', 0.6, 'Learning rate decay factor.')
+
+tf.app.flags.DEFINE_float(
+    'decay_steps', 10.0*100,
+    'Number of epochs after which learning rate decays.')
 ###############################################################
 #                        Loss Flags                           #
 ###############################################################
 tf.app.flags.DEFINE_float(
-    'ssim_loss_weight', 0.0,
+    'mae_loss_weight', 2.0,
     'The weight of MS-SSIM loss.')
 
 tf.app.flags.DEFINE_float(
-    'mae_loss_weight', 1.0,
-    'The weight of MS-SSIM loss.')
-
-tf.app.flags.DEFINE_float(
-    'entropy_loss_weight', 1.0,
+    'entropy_loss_weight', 2.0,
     'How much to weight the cross entropy loss.')
 
 tf.app.flags.DEFINE_float(
-    'dice_loss_weight', 0.0,
+    'dice_loss_weight', 1.0,
     'How much to weight the dice loss.')
 
 tf.app.flags.DEFINE_float(
-    'aux_mae_loss_weight', 1.0,
-    'The weight of MS-SSIM loss.')
-
-tf.app.flags.DEFINE_float(
-    'aux_entropy_loss_weight', 1.0,
-    'How much to weight the cross entropy loss.')
-
-tf.app.flags.DEFINE_float(
-    'aux_dice_loss_weight', 0.0,
+    'l1_loss_weight', 0.0,
     'How much to weight the dice loss.')
 
 tf.app.flags.DEFINE_boolean(
@@ -114,7 +105,7 @@ tf.app.flags.DEFINE_string(
     'variables to exclude when restoring from a checkpoint.')
 
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', 'E:\GitHub\MMFI\log/0917-0813/train',
+    'checkpoint_path', 'log/train',
     'The path to a checkpoint from which to fine-tune.')
 
 tf.app.flags.DEFINE_boolean(
@@ -212,20 +203,14 @@ tf.app.flags.DEFINE_float(
 tf.app.flags.DEFINE_float(
     'label_smoothing', 0.0, 'The amount of label smoothing.')
 
-tf.app.flags.DEFINE_float(
-    'learning_rate_decay_factor', 0.25, 'Learning rate decay factor.')
-
-tf.app.flags.DEFINE_float(
-    'decay_steps', 10.0*100,
-    'Number of epochs after which learning rate decays.')
 ###############################################################
 #                        TFGAN Flags                          #
 ###############################################################
-tf.app.flags.DEFINE_boolean('use_tfgan',False,
+tf.app.flags.DEFINE_boolean('use_tfgan',True,
                             'Whether to use TFGAN as main model')
 
 tf.app.flags.DEFINE_integer(
-    'grid_size', 5, 'Grid size for image visualization.')
+    'grid_size', 4, 'Grid size for image visualization.')
 
 tf.app.flags.DEFINE_float('generator_lr', 0.001,
                           'Initial Generator learning rate.')
