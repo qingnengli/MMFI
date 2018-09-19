@@ -172,6 +172,7 @@ def SPP(net, patch_size=[3, 5, 10], num_channel=8,scope = None):
           padding_net = tf.pad(net, padding, mode='CONSTANT')
           patch = layers.max_pool2d(padding_net, [h_wid, w_wid], [h_wid, w_wid])
           patch = layers.conv2d(patch,num_channel)
+          net = layers.conv2d(patch, num_channel)
           patch_pixel = layers.flatten(patch)
           feature = tf.concat((feature,patch_pixel),axis=-1)
     return feature
