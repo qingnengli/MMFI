@@ -4,37 +4,33 @@ from __future__ import print_function
 
 import os
 import datetime
-import numpy as np
 import tensorflow as tf
 
-from model import unconditional_generator
-from model import Vanillia
-from model import Onlydecoder
-from model import SRMatrix
-from loss import tf_ms_ssim
+from network import SRMatrix
+from network import unconditional_generator
 from loss import cross_entropy_loss
+from loss import combine_loss
 from loss import dice_loss
 from loss import mae_loss
-from loss import ssim_loss
 from loss import l1_loss
-
 import data_loader
-import config as cfg
+import config
 
 FLAGS = tf.app.flags.FLAGS
 slim = tf.contrib.slim
 tfgan = tf.contrib.gan
-
+CURRENT_DIR=os.path.dirname(__file__)
 os.environ["CUDA_VISIBLE_DEVICES"]=''
+
 def main(_):
 	tf.logging.set_verbosity(tf.logging.INFO)
 	with tf.Graph().as_default():
 		logdir = os.path.join(FLAGS.path_prefix, FLAGS.logdir)
 		# logdir = os.path.join(logdir, "{:%m%d-%H%M}".format(datetime.datetime.now()))
 		evaldir = os.path.join(logdir,'eval')
-		if not tf.gfile.Exists(evaldir):
-			# tf.gfile.DeleteRecursively(evaldir)
-			tf.gfile.MakeDirs(evaldir)
+		if tf.gfile.Exists(evaldir):
+			tf.gfile.DeleteRecursively(evaldir)
+		tf.gfile.MakeDirs(evaldir)
 
 		# images: input, targets: ground truth images, label: Multi-shapes
 		with tf.name_scope('inputs'):
@@ -42,7 +38,7 @@ def main(_):
 
 		if FLAGS.use_tfgan:
 			with tf.variable_scope('Generator'):
-				generated_data = SRMatrix(images,is_training = False)
+				generated_data = unconditional_generator(images,is_training = False)
 		else:
 			generated_data,Aux_data= SRMatrix(images,is_training = False)
 
@@ -54,20 +50,7 @@ def main(_):
 
 		# Create the summary ops such that they also print out to std output:
 		with tf.name_scope('Valid_Loss'):
-			ssim = ssim_loss(generated_data, targets)
-			mae = mae_loss(generated_data, targets)
-			dice = dice_loss(generated_data, targets)
-			entropy_loss = cross_entropy_loss(generated_data, targets)
-			total_loss = mae * FLAGS.mae_loss_weight \
-									 + dice * FLAGS.dice_loss_weight \
-									 + ssim * FLAGS.ssim_loss_weight\
-									 +entropy_loss * FLAGS.entropy_loss_weight
-
-			tf.summary.scalar('Total_loss', total_loss)
-			tf.summary.scalar('Cross_entropy_loss', entropy_loss)
-			tf.summary.scalar('Dice_loss', dice)
-			tf.summary.scalar('MAE_loss', mae)
-			tf.summary.scalar('SSIM_loss', ssim)
+			total_loss = combine_loss(generated_data, targets, add_summary=True, name='total_loss')
 
 		with tf.name_scope('Valid_summary'):
 			summeried_num = FLAGS.grid_size * FLAGS.grid_size
@@ -82,10 +65,10 @@ def main(_):
 		num_batches = int(num_examples / FLAGS.batch_size)
 
 		if tf.gfile.IsDirectory(FLAGS.checkpoint_path):
-			checkpoint_path = tf.train.latest_checkpoint(FLAGS.checkpoint_path)
+			checkpoint_dir = os.path.join(CURRENT_DIR,FLAGS.checkpoint_path)
+			checkpoint_path = tf.train.latest_checkpoint(checkpoint_dir)
 		else:
 			checkpoint_path = FLAGS.checkpoint_path
-
 		tf.logging.info('Evaluating %s' % checkpoint_path)
 
 		if FLAGS.use_tfgan:
@@ -113,5 +96,4 @@ def main(_):
 
 if __name__ == '__main__':
 	tf.app.run()
-
 
