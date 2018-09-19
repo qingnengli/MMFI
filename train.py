@@ -16,7 +16,7 @@ from model import tfgan_model
 from model import slim_model
 
 import data_loader
-import config as cfg
+import config
 
 FLAGS = tf.app.flags.FLAGS
 slim = tf.contrib.slim
@@ -31,11 +31,11 @@ def main(_):
     images, targets,optics = data_loader.read_inputs(is_training = True)
 
     logdir = os.path.join(FLAGS.path_prefix,FLAGS.logdir)
-    logdir = os.path.join(logdir, "{:%m%d-%H%M}".format(datetime.datetime.now()))
+    # logdir = os.path.join(logdir, "{:%m%d-%H%M}".format(datetime.datetime.now()))
     traindir = os.path.join(logdir,'train')
-    if not tf.gfile.Exists(traindir):
-    #   tf.gfile.DeleteRecursively(traindir)
-      tf.gfile.MakeDirs(traindir)
+    if tf.gfile.Exists(traindir):
+      tf.gfile.DeleteRecursively(traindir)
+    tf.gfile.MakeDirs(traindir)
 
     # Storary Memory is reduced with development of Network
     # tfgan.model:425MB --> slim.model: 30MB --> slim(FCN):3MB
