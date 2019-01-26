@@ -1,102 +1,83 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import os
-import datetime
 import tensorflow as tf
+import os,data_loader, config
 
-from network import SRMatrix
-from network import unconditional_generator
-from loss import cross_entropy_loss
-from loss import combine_loss
-from loss import dice_loss
-from loss import mae_loss
-from loss import l1_loss
-import data_loader
-import config
+from loss import correlation
+from utils import circle,get_summary_image
+from network import MLP,pix2pix_G
 
 FLAGS = tf.app.flags.FLAGS
 slim = tf.contrib.slim
 tfgan = tf.contrib.gan
 CURRENT_DIR=os.path.dirname(__file__)
-os.environ["CUDA_VISIBLE_DEVICES"]=''
+# os.environ["CUDA_VISIBLE_DEVICES"]=''
+
 
 def main(_):
 	tf.logging.set_verbosity(tf.logging.INFO)
 	with tf.Graph().as_default():
-		logdir = os.path.join(FLAGS.path_prefix, FLAGS.logdir)
-		# logdir = os.path.join(logdir, "{:%m%d-%H%M}".format(datetime.datetime.now()))
-		evaldir = os.path.join(logdir,'eval')
-		if tf.gfile.Exists(evaldir):
-			tf.gfile.DeleteRecursively(evaldir)
-		tf.gfile.MakeDirs(evaldir)
+		logdir = 'E:\GitHub\MMFI\log\GG12\\CNN'
+		evaldir = os.path.join(logdir, 'eval')
+		if not tf.gfile.Exists(evaldir):
+			# tf.gfile.DeleteRecursively(evaldir)
+			tf.gfile.MakeDirs(evaldir)
 
-		# images: input, targets: ground truth images, label: Multi-shapes
 		with tf.name_scope('inputs'):
-			images, mnist, targets = data_loader.read_inputs(is_training = False)
+			fiber_output, fiber_input, encoder, label = data_loader.read_inputs('valid.txt', False)
 
-		if FLAGS.use_tfgan:
-			with tf.variable_scope('Generator'):
-				generated_data = unconditional_generator(images,is_training = False)
-		else:
-			generated_data,Aux_data= SRMatrix(images,is_training = False)
-
-		# Choose the metrics to compute:
-		names_to_values, names_to_updates = slim.metrics.aggregate_metric_map({
-			"eval/mean_absolute_error": slim.metrics.streaming_mean_absolute_error(generated_data, targets),
-			"eval/mean_squared_error": slim.metrics.streaming_mean_squared_error(generated_data, targets),
-		})
-
-		# Create the summary ops such that they also print out to std output:
-		with tf.name_scope('Valid_Loss'):
-			total_loss = combine_loss(generated_data, targets, add_summary=True, name='total_loss')
+		with tf.variable_scope('Generator'):
+			with tf.variable_scope('G1'):
+				generated_input = pix2pix_G(fiber_output, is_training=False) \
+				                  * circle(FLAGS.input_size,FLAGS.input_size)
+			with tf.variable_scope('G2'):
+				generated_data = pix2pix_G(generated_input,is_training=False)\
+				                 * circle(FLAGS.input_size,FLAGS.input_size)
 
 		with tf.name_scope('Valid_summary'):
-			summeried_num = FLAGS.grid_size * FLAGS.grid_size
-			reshaped_images = tfgan.eval.image_reshaper(images[:summeried_num, ...], num_cols=FLAGS.grid_size)
-			reshaped_generated_data = tfgan.eval.image_reshaper(generated_data[:summeried_num, ...], num_cols=FLAGS.grid_size)
-			reshaped_targets = tfgan.eval.image_reshaper(targets[:summeried_num, ...], num_cols=FLAGS.grid_size)
-			tf.summary.image('Inputs', reshaped_images, FLAGS.max_summary_images)
-			tf.summary.image('Generated_data', reshaped_generated_data, FLAGS.max_summary_images)
-			tf.summary.image('Real_data', reshaped_targets, FLAGS.max_summary_images)
+			reshaped_fiber_input = get_summary_image(fiber_input, FLAGS.grid_size)
+			reshaped_label = get_summary_image(label, FLAGS.grid_size)
+			reshaped_generated_input = get_summary_image(generated_input, FLAGS.grid_size)
+			reshaped_generated_data = get_summary_image(generated_data, FLAGS.grid_size)
+			tf.summary.image('Input_Fiber', reshaped_fiber_input)
+			tf.summary.image('Input_Generator', reshaped_generated_input)
+			tf.summary.image('Data_Real', reshaped_label)
+			tf.summary.image('Data_Generator', reshaped_generated_data)
 
-		num_examples = 1000
-		num_batches = int(num_examples / FLAGS.batch_size)
+		with tf.name_scope('Valid_op'):
+			psnr = tf.reduce_mean(tf.image.psnr(generated_data, label, max_val=1.0))
+			ssim = tf.reduce_mean(tf.image.ssim(generated_data, label, max_val=1.0))
+			corr = correlation(generated_data, label)
+			# inception_score = get_inception_score(generated_data)
 
-		if tf.gfile.IsDirectory(FLAGS.checkpoint_path):
-			checkpoint_dir = os.path.join(CURRENT_DIR,FLAGS.checkpoint_path)
-			checkpoint_path = tf.train.latest_checkpoint(checkpoint_dir)
-		else:
-			checkpoint_path = FLAGS.checkpoint_path
+			tf.summary.scalar('PSNR', psnr)
+			tf.summary.scalar('SSIM', ssim)
+			tf.summary.scalar('Relation', corr)
+
+			grate = tf.ones([1,FLAGS.grid_size*FLAGS.input_size,10,1],dtype=tf.float32)
+			reshaped_images = tf.concat((reshaped_generated_input, grate,
+			                             reshaped_fiber_input, grate,
+			                             reshaped_label, grate,
+			                             reshaped_generated_data, grate), 2)
+			uint8_images = tf.cast(reshaped_images*255, tf.uint8)
+			image_write_ops = tf.write_file('%s/%s' % (evaldir, 'Generator_is_training_False.png'),
+			                                tf.image.encode_png(uint8_images[0]))
+
+			status_message = tf.string_join([' PSNR: ', tf.as_string(psnr), ' ',
+			                                 ' SSIM: ', tf.as_string(ssim), ' ',
+			                                 ' Correlation: ', tf.as_string(corr)],
+			                                name='status_message')
+
+
+		checkpoint_path = tf.train.latest_checkpoint(logdir)
 		tf.logging.info('Evaluating %s' % checkpoint_path)
 
-		if FLAGS.use_tfgan:
-			tf.contrib.training.evaluate_once(
-				master=FLAGS.master,
-				checkpoint_path = checkpoint_path,
-				eval_ops=list(names_to_updates.values()),
-				hooks=[tf.contrib.training.SummaryAtEndHook(evaldir),
-							 tf.contrib.training.StopAfterNEvalsHook(1)])
-		else:
-			slim.evaluation.evaluate_once(
-				master=FLAGS.master,
-				checkpoint_path=checkpoint_path,
-				logdir=evaldir,
-				num_evals=num_batches,
-				eval_op=list(names_to_updates.values()))
-
-			# slim.evaluation.evaluation_loop(
-			# 	master =FLAGS.master,
-			# 	checkpoint_dir= checkpoint_path,
-			# 	logdir = evaldir,
-			# 	num_evals = num_batches,
-			# 	eval_op = list(names_to_updates.values()),
-			# 	eval_interval_secs=FLAGS.eval_interval_secs)
+		tf.contrib.training.evaluate_once(
+			checkpoint_path,
+			hooks=[tf.contrib.training.SummaryAtEndHook(evaldir),
+			       tf.contrib.training.StopAfterNEvalsHook(50),
+						 tf.train.LoggingTensorHook([status_message],every_n_iter=5)],
+			eval_ops=image_write_ops)
 
 if __name__ == '__main__':
 	tf.app.run()
-
-
 
 

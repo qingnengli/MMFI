@@ -1,122 +1,114 @@
-"""Networks for MNIST example using TFGAN."""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow as tf
 import numpy as np
+
 from utils import group_conv
 from utils import channel_shuffle
+from slim.nets import cyclegan
+from slim.nets import pix2pix
+from utils import circle
+
 layers = tf.contrib.layers
+# ----------------------------Generator --------------------------------
 
-def unconditional_generator(img, weight_decay=2.5e-5,keep_prob=0.4, is_training=True):
-  """Generator to produce unconditional MNIST images.
+def MLP(img, weight_decay=2.5e-5,keep_prob=0.4, is_training=True):
+  with tf.contrib.framework.arg_scope([layers.fully_connected],
+    weights_regularizer=layers.l2_regularizer(weight_decay)):
+    net = layers.flatten(img)
+    net = layers.dropout(net, keep_prob=keep_prob, is_training=is_training)
+    net = layers.fully_connected(net, 64 * 64 * 1,
+                                 normalizer_fn=None,
+                                 activation_fn=tf.tanh)
+    net = tf.reshape(net, [-1, 64, 64,1])
+    return (net + 1) / 2
 
-  Args:
-    noise: A single Tensor representing noise.
-    keep_prob: The keep probability of dropout layer.
-    weight_decay: The value of the l2 weight decay.
-    is_training: If `True`, batch norm uses batch statistics. If `False`, batch
-      norm uses the exponential moving average collected from population
-      statistics.
-
-  Returns:
-    A generated image in the range [-1, 1].
-  """
-  _,h,w,c = img.get_shape().as_list()
-  repeat = int(np.log2(h//16))
+def Unet(img, weight_decay=2.5e-5, keep_prob=0.4, is_training=True):
   with tf.contrib.framework.arg_scope(
-      [layers.fully_connected, layers.conv2d_transpose],
+      [layers.conv2d, layers.conv2d_transpose],
       activation_fn=tf.nn.relu, normalizer_fn=layers.batch_norm,
       weights_regularizer=layers.l2_regularizer(weight_decay)):
     with tf.contrib.framework.arg_scope(
         [layers.batch_norm], is_training=is_training):
-      net = layers.flatten(img)
-      net = layers.fully_connected(net,100)
-      net = layers.fully_connected(net, 4 * 4* 64)
-      net = tf.reshape(net, [-1, 4, 4, 64])
-      net = layers.dropout(net,keep_prob= keep_prob,is_training=is_training)
-      net = layers.conv2d_transpose(net, 64, [4, 4], stride=2)
+      net = layers.conv2d(img, 64, [3, 3], stride=1)  # 64*64
+      net = layers.conv2d(net, 64, [3, 3], stride=1)
+      encode_1 = net
+      net = layers.max_pool2d(net, [2, 2], padding='SAME')
+      net = layers.conv2d(net, 128, [3, 3], stride=1)  # 32*32
+      net = layers.conv2d(net, 128, [3, 3], stride=1)
+      net = layers.conv2d(net, 128, [3, 3], stride=1)
+      encode_2 = net
+      net = layers.max_pool2d(net, [2, 2], padding='SAME')
+      net = layers.conv2d(net, 256, [3, 3], stride=1)  # 16*16
+      net = layers.conv2d(net, 256, [3, 3], stride=1)
+      net = layers.conv2d(net, 256, [3, 3], stride=1)
+      encode_3 = net
+      net = layers.max_pool2d(net, [2, 2], padding='SAME')
+      net = layers.conv2d(net, 512, [3, 3], stride=1)  # 8*8
+      net = layers.conv2d(net, 512, [3, 3], stride=1)
+      net = layers.conv2d(net, 512, [3, 3], stride=1)
+      encode_4 = net
+      net = layers.max_pool2d(net, [2, 2], padding='SAME')
+      net = layers.conv2d(net, 1024, [3, 3], stride=1)  # 4*4
+
+      net = layers.conv2d(net, 1024, [3, 3], stride=1)
+      net = layers.conv2d_transpose(net, 512, [2, 2], stride=2)
+      net = tf.concat((net,encode_4),axis=-1)
+      net = layers.conv2d(net, 512, [3, 3], stride=1)  # 8*8
+      net = layers.conv2d(net, 512, [3, 3], stride=1)
+      net = layers.conv2d(net, 512, [3, 3], stride=1)
       net = layers.dropout(net, keep_prob=keep_prob, is_training=is_training)
-      net = layers.conv2d_transpose(net, 64, [4, 4], stride=2)
+      net = layers.conv2d_transpose(net, 256, [2, 2], stride=2)
+      net = tf.concat((net,encode_3),axis=-1)
+      net = layers.conv2d(net, 256, [3, 3], stride=1)  # 16*16
+      net = layers.conv2d(net, 256, [3, 3], stride=1)
+      net = layers.conv2d(net, 256, [3, 3], stride=1)
       net = layers.dropout(net, keep_prob=keep_prob, is_training=is_training)
-      net = layers.repeat(net, repeat, layers.conv2d_transpose, 32, [4, 4], stride=2)
-      net = layers.conv2d(net, 1, [4, 4], normalizer_fn=None, activation_fn=tf.tanh)
+      net = layers.conv2d_transpose(net, 128, [2, 2], stride=2)
+      net = tf.concat((net, encode_2), axis=-1)
+      net = layers.conv2d(net, 128, [3, 3], stride=1)  # 32*32
+      net = layers.conv2d(net, 128, [3, 3], stride=1)
+      net = layers.conv2d(net, 128, [3, 3], stride=1)
+      net = layers.dropout(net, keep_prob=keep_prob, is_training=is_training)
+      net = layers.conv2d_transpose(net, 64, [2, 2], stride=2)
+      net = tf.concat((net, encode_1), axis=-1)
+      net = layers.conv2d(net, 64, [3, 3], stride=1)
+      net = layers.conv2d(net, 1, [4, 4], normalizer_fn=None, activation_fn=tf.tanh)  # 64*64
       return (net+1)/2
 
-_leaky_relu = lambda x: tf.nn.leaky_relu(x, alpha=0.01)
-def unconditional_discriminator(img, unused_conditioning, weight_decay=2.5e-5):
-  """Discriminator network on unconditional MNIST digits.
 
-  Args:
-    img: Real or generated MNIST digits. Should be in the range [-1, 1].
-    unused_conditioning: The TFGAN API can help with conditional GANs, which
-      would require extra `condition` information to both the generator and the
-      discriminator. Since this example is not conditional, we do not use this
-      argument.
-    weight_decay: The L2 weight decay.
+def pix2pix_G(input_images,is_training=True):
 
-  Returns:
-    Logits for the probability that the image is real.
-  """
-  with tf.contrib.framework.arg_scope(
-      [layers.conv2d, layers.fully_connected],
-      activation_fn=_leaky_relu, normalizer_fn=None,
-      weights_regularizer=layers.l2_regularizer(weight_decay),
-      biases_regularizer=layers.l2_regularizer(weight_decay)):
-    net = layers.conv2d(img, 64, [4, 4], stride=2)
-    net = layers.conv2d(net, 64, [4, 4], stride=2)
-    net = layers.conv2d(net, 64, [4, 4], stride=2)
-    net = layers.conv2d(net, 64, [4, 4], stride=2)
-    net = layers.flatten(net)
-    net = layers.fully_connected(net, 1024, normalizer_fn=layers.layer_norm)
-  return layers.linear(net, 1)
+    blocks = [pix2pix.Block(64, 0.5), pix2pix.Block(128, 0.5),pix2pix.Block(256, 0.5),
+              pix2pix.Block(512, 0), pix2pix.Block(512, 0), ]
 
-def SRMatrix(img,weight_decay=2.5e-5,keep_prob =0.5, is_training=True,use_aux = False):
-  b,h,w,c = img.get_shape().as_list()
-  with tf.contrib.framework.arg_scope(
-      [layers.fully_connected, layers.conv2d_transpose, layers.conv2d],
-      activation_fn=tf.nn.relu, normalizer_fn=layers.batch_norm,
-      weights_regularizer=layers.l2_regularizer(weight_decay)):
-    with tf.contrib.framework.arg_scope(
-        [layers.batch_norm], is_training=is_training):
-      encoder1 = layers.conv2d(img, 64, [4, 4], stride=2)
-      encoder2 = layers.conv2d(encoder1, 64, [4, 4], stride=2)
-      encoder3 = layers.conv2d(encoder2, 64, [4, 4], stride=2)
+    with tf.contrib.framework.arg_scope(pix2pix.pix2pix_arg_scope()):
+      output_images, _ = pix2pix.pix2pix_generator(input_images, num_outputs=1,
+                                                   blocks=blocks,
+                                                   upsample_method='nn_upsample_conv',
+                                                   is_training=is_training)
 
-      net = layers.conv2d(encoder3, 1, [1, 1])
-      net = layers.flatten(net)
-      net = layers.fully_connected(net, int(h*w//64), normalizer_fn=layers.layer_norm)
-      net = tf.reshape(net,[-1,h//8,w//8,1])
-      Auxlogit_1 = layers.conv2d(net, 1, [4, 4], normalizer_fn=None, activation_fn=tf.tanh)
+    return (tf.tanh(output_images)+1)/2
 
-      net = layers.dropout(net, keep_prob=keep_prob, is_training=is_training)
-      decoder3 = layers.conv2d(encoder3, 1, [4, 4])
-      net = layers.conv2d_transpose(net+decoder3, 64, [4, 4], stride=2)
-      net = layers.conv2d(net, 1, [4, 4])
-      Auxlogit_2 = layers.conv2d(net, 1, [4, 4], normalizer_fn=None, activation_fn=tf.tanh)
 
-      net = layers.dropout(net, keep_prob=keep_prob, is_training=is_training)
-      decoder2 = layers.conv2d(encoder2, 1, [4, 4])
-      net = layers.conv2d_transpose(net+decoder2, 64, [4, 4], stride=2)
-      net = layers.conv2d(net, 1, [4, 4])
-      Auxlogit_3 = layers.conv2d(net, 1, [4, 4], normalizer_fn=None, activation_fn=tf.tanh)
+# ----------------------------Discriminator ------------------------------
+def pix2pix_D(image_batch, unused_conditioning=None):
 
-      net = layers.dropout(net, keep_prob=keep_prob, is_training=is_training)
-      decoder1 = layers.conv2d(encoder1, 1, [4, 4])
-      net = layers.conv2d_transpose(net+decoder1, 64, [4, 4], stride=2)
-      net = layers.conv2d(net, 1, [4, 4])
+  with tf.contrib.framework.arg_scope(pix2pix.pix2pix_arg_scope()):
+    logits_4d, _ = pix2pix.pix2pix_discriminator(
+      image_batch, num_filters=[64, 128, 256, 512])
+    logits_4d.shape.assert_has_rank(4)
 
-      net = layers.conv2d(net, 1, [4, 4])
-      Logit = layers.conv2d(net, 1, [4, 4], normalizer_fn=None, activation_fn=tf.tanh)
+  # Output of logits is 4D. Reshape to 2D, for TFGAN.
+  net = layers.flatten(logits_4d)
+  # net = layers.fully_connected(net, 1024, normalizer_fn=layers.layer_norm)
+  net = layers.fully_connected(net, 1024, activation_fn=None) # default: normalizer_fn=None
+  return net
 
-      Logit = (Logit + 1)/2
-      Auxlogit_1 = (Auxlogit_1 + 1) / 2
-      Auxlogit_2 = (Auxlogit_2 + 1) / 2
-      Auxlogit_3 = (Auxlogit_3 + 1) / 2
+# ---------------------------- Combination ------------------------------
+from utils import circle
+def generator_fn(input_images,is_training=True):
+  with tf.variable_scope('G1'):
+    generated_input = pix2pix_G(input_images, is_training) * circle(64,64)
+  with tf.variable_scope('G2'):
+    generated_data = pix2pix_G(generated_input, is_training)* circle(64,64)
 
-      if use_aux:
-        return [Logit, [Auxlogit_1,Auxlogit_2,Auxlogit_3]]
-      else:
-        return Logit
+  return tf.concat((generated_data, generated_input), axis=-1)
